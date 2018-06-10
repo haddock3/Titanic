@@ -1,0 +1,325 @@
+# INTEGRACIÓ I SELECCIÓ DE LES DADES D'INTERÉS A ANALITZAR.
+
+
+## Libreries utilitzades.
+
+
+library(dplyr) # data manipulation
+library(mice) #imputació de valors perduts a R
+library(nortest) #anàlisis de normalitat
+library(C50) #arbres de decissio
+
+
+
+# NETEJA DE LES DADES.
+
+
+train <- read.csv('train.csv', stringsAsFactors = F)
+test  <- read.csv('test.csv', stringsAsFactors = F)
+
+full  <- bind_rows(test,train) # bind training & test data
+
+#---comprovem que les variables que son de tipus character, les convertim a factors
+full[sapply(full, is.character)] <- lapply(full[sapply(full, is.character)], as.factor)
+
+#---visualitzem les dades-------------------------------------
+head(full)
+
+#---analitzem el tipus de dada de cada camp---------------------
+sapply(full,function(x) class(x))
+
+
+## Anàlisis de valors perduts.
+
+#---comprovem el numero de valors desconeguts--------------------
+sapply(full,function(x) sum(is.na(x)))
+
+
+### Sobreviure.
+
+
+survivedInfo <- full %>%  filter(!is.na(Survived))
+#---comprovem el numero de valors desconeguts--------------------
+sapply(survivedInfo,function(x) sum(is.na(x)))
+
+### Edat.
+
+#---determinem una llavor-----------------------
+set.seed(129)
+
+#---Utilitzem l' imputació amb mice excloen variables no rellevants:
+  mice_mod <- mice(survivedInfo[, !names(survivedInfo) %in% c('PassengerId','Name','Ticket','Cabin')], method='rf') 
+
+#---guardem l' output complert-------------------------
+mice_output <- complete(mice_mod)
+
+#---Comparem la distribució de l'edat original i la calculada--------------
+#---Fem un plot de les distribucions de la edat--------------
+par(mfrow=c(1,2))
+hist(survivedInfo$Age, freq=F, main='Age: Original Data', 
+     col='darkgreen', ylim=c(0,0.04))
+hist(mice_output$Age, freq=F, main='Age: MICE Output', 
+     col='lightgreen', ylim=c(0,0.04))
+par(mfrow=c(1,2))
+
+#---Creem una variable nova per poder-les comparar.
+survivedInfo$AgeModel <- mice_output$Age
+
+#---analitzam la correlació entre totes dues variables-----------------------------
+cor(survivedInfo$Age,survivedInfo$AgeModel, use='complete.obs')
+cor.test(survivedInfo$Age,survivedInfo$AgeModel, use='complete.obs')
+
+### Anàlisi dels valors en blanc a Embarked.
+
+
+#---escollim les variables rellevants en un nou dataframe
+df<-survivedInfo[,c(2,4,9,11,12,13)]
+
+#---quants regsitres tenim en blanc------
+aggregate(Fare~Embarked, data=df, length)
+
+#---quins numero de registre son
+df[df$Embarked=='',]
+
+#---a quin port hauriem d'assignar-los
+plot(log(Fare)~Embarked, data = df)
+
+#---assignem els valors---------
+df$Embarked[62]<-'C'
+df$Embarked[830]<-'C'
+df$Embarked<-factor(df$Embarked)
+
+
+### Anàlisi dels 0 a Fare.
+
+#---elemnents del dataframe que tenen  valor 0 a Fare.-----
+df[df$Fare==0,]
+
+#---vector amb els index que tenen Fare = 0----------------
+fare0<-which(df$Fare %in% 0)
+
+#---calcul de les diferents mitjanes en funció de la clase i el port d'embarkament----
+  mitjanas<-aggregate(Fare~Pclass,df[df$Sex=='male'&&df$Embarked=='S',],mean)
+
+#substitucio dels 0 per les mitjanes en funció de la clase i el port d'embarcament----
+for (i in 1:length(fare0)){
+  #i=1
+  n=fare0[i]
+  fareClass<-df$Pclass[n]
+  df$Fare[n]<-mitjanas$Fare[mitjanas$Pclass==fareClass]
+}
+
+### Anàlisi d' outsiders.
+
+#---analisi d'outsiders---------------------------------------------------
+  col.names=colnames(df)
+for (i in 1:ncol(df)) {
+  if(i==1) cat('outsiders per variables\n')
+  if (is.integer(df[,i]) | is.numeric(df[,i])) {
+    cat(col.names[i])
+    cat('\n')
+    cat(boxplot.stats(df[,i])$out)
+    cat('\n')
+  }
+}
+
+
+
+## Últims pasos amb el dataframe.
+
+
+#---comprovem de nou el número de valors desconeguts--------------------
+sapply(survivedInfo,function(x) sum(is.na(x)))
+
+#---convertim en factors les variables necessaries i altres modificacions
+df$Pclass<-factor(df$Pclass)
+df$Survived<-factor(df$Survived)
+levels(df$Survived)<-c('died', 'survived')
+df$Age<-df$AgeModel
+df<-df[,-6]
+
+
+
+### Exportem les dades definitives.
+
+#---exportem les dades definitives----------------------------------------------
+write.csv(df, file = 'titanic_dataFrame_clean.csv', row.names = F)
+
+
+# ANÀLISI DE LES DADES.
+
+#--- grafic boxplot per les variable numeriques-------------------------------
+col.names<-colnames(df)
+par(mfrow=c(1,2))
+for (i in 1:ncol(df)) {
+  #i=1
+  if(i==1) cat('boxplot per variables numeriques\n')
+  if (!is.factor(df[,i])) {
+    boxplot(df[,i], main=col.names[i])
+  }
+}
+par(mfrow=c(1,1))
+
+#---grafics per variables categoriques-------------------------------------------
+par(mfrow=c(1,2))
+i=1
+for (i in 1:ncol(df)) {
+  if(i==1) cat('barplot per variables categoriques\n')
+  if (is.factor(df[,i])) {
+    barplot(table(df[,i]), main=col.names[i])
+  }
+}
+par(mfrow=c(1,1))
+
+
+## Anàlisis de Normalidad per les variables numeriques.
+
+#comprobació de la normalitat de les variables numeriques--------------------------
+
+alpha=0.05 #en general utilitzarem aquest valor durant tot el treball
+#i=1
+for (i in 1:ncol(df)) {
+if(i==1) cat('variables que no segueixen una distribucio normal:\n')
+if (is.integer(df[,i]) | is.numeric(df[,i])) {
+p_valor=ad.test(df[,i])$p.value
+if (p_valor<alpha)
+cat(col.names[i])
+cat('\n')
+}
+}
+#Podem comprovar que cap variable numerica es comporta com a una Normal------------
+
+
+## Anàlisis de la diferencia d'edat per sexe.
+
+#-----TWO SAMPLE TEST-------------------------------
+#---Anem a comparar l'edat entre homes i dones
+
+#analitzam els histogrames------------------------
+par(mfrow=c(2,2))
+hist(df$Age[df$Sex=='male'], probability = T, main = 'male')
+lines(density(df$Age))
+hist(df$Age[df$Sex=='female'], probability = T, main = 'female')
+lines(density(df$Age))
+hist(df$Age, probability = T)
+lines(density(df$Age))
+par(mfrow=c(1,1))
+
+#---comparem les mitjanes---------------------------
+mean(df$Age[df$Sex=='male'])
+mean(df$Age[df$Sex=='female'])
+
+#---Suposem Normalitat de la variable AGE-------------
+t.test(Age~Sex, data = df)
+
+#---anem a comparar les seves variances--------------
+#h1: El ratio de la varianza es diferente de 1
+var.test(Age~Sex, data = df)
+
+#---En comptes de fer servir el t.test he de fer servir el wilcox.test
+#h1:les dues medianas son diferents
+wilcox.test(Age~Sex, data = df)
+
+## Anàlisis de la diferencia d'edat per clase en la que viatjaven
+
+#-----ANALISIS DE LA VARIANÇA I KRUSHAL-WALIS TEST-----------------------------
+#---ONE WAY ANALISIS--------------------------
+#---calculem la mitjana d'edat per classe--------------------------------------
+aggregate(Age~Pclass, data=df,mean)
+
+#---creem un regressió entre totes dues variables i calculem l' ANOVA---------
+anova(lm(Age~Pclass, data = df))
+
+#---ara necessitem saber entre que grups hi ha diferencia-----------------------
+lm(Age~Pclass, data = df)
+pairwise.t.test(df$Age,df$Pclass,p.adjust.method = 'bonferroni')#tots el p-valors=0
+#conclusió: Existen diferencias i els mes grans viatjaven en 1a i els mes joves en 3a
+
+#---comprovem la diferencia de variances dintre dels grups: BARTLETT's test--------------
+bartlett.test(df$Age,df$Pclass)
+
+#---com no podem asumir la igualtat de variances usem un test no parametric kruskal.test---
+kruskal.test(df$Age,df$Pclass)
+
+
+## Hi ha diferencia d'edat per classe i supervivencia?.
+
+#---TWO WAY ANALISIS DE LA VARIANÇA---------------------------
+interaction.plot(df$Pclass, df$Survived, df$Age)
+
+#---test parametric: ANOVA
+anova(lm(Age~Pclass+Survived, data = df))
+
+#---test no parametric: FRIEDMAN test
+#---han de ser variables factor i s'han de precalcular les dades
+agg<-aggregate(Age~Pclass+Survived, data = df, mean)
+friedman.test(Age~Pclass|Survived, data = agg)
+
+
+## Hi ha dependencia entre la supervivencia i els diferents sexes?.
+
+#-----TABULAR DATA------------------------------------------
+#---TWO INDEPENDENT PROPORTIONS------------------
+
+a<-table(df$Survived, df$Sex)#taula 2x2
+fisher.test(a)
+chisq.test(a)
+
+
+## Hi ha diferencia en la classe en que es viatja segons el port d'embarcament?.
+
+#--- R X C TABLES---------------------------
+
+b<-table(df$Pclass,df$Embarked)
+chisq.test(b)
+
+#per veure les diferencies----------------------
+esp<-chisq.test(b)$expected
+obs<-chisq.test(b)$observed
+(obs-esp)^2/esp#els C en 1a tenen una gran contribució
+
+
+## Correlacions.
+
+df.numeric<-select_if(df, is.numeric)#seleccio de les columnes que son numeriques
+pairs(df.numeric)
+
+#matriu de correlacions--------------------------------------
+cor(df.numeric)#els nivells de correlació son molt baixos
+cor.test(df$Fare,df$Age, method = 'pearson')#p-valor=0--->h1: la correlació es diferent de 0
+
+#variants no parametriques--------------------------------------
+cor.test(df$Fare,df$Age, method = 'spearman')#p-valor=0--->h1: la correlació es diferent de 0
+cor.test(df$Fare,df$Age, method = 'kendall')#p-valor=0--->h1: la correlació es diferent de 0
+
+
+## Mirem si es pot generar una regressió entre totes dues variables.
+
+#---SIMPLE LINEAR REGRESSION---------------
+attach(df)
+lmFareAge<-lm(Fare ~ Age, data=df)
+summary(lmFareAge)#els coeficients son significatius pero r2 ajustada=0.03
+
+#---generem el gràfic-------------
+plot(Fare~Age, data=df)
+abline(lmFareAge)
+segments(df$Age,fitted(lmFareAge),df$Age,df$Fare)
+
+## Models lineals generalitzats.
+
+rl<-glm(Survived~Pclass+Sex+Age+Fare+Embarked,family=binomial('logit'))
+summary(rl)
+
+
+## Arbres de decissió.
+
+#---------------arbres de classificació-----------------------------
+
+model<-C5.0(Survived~Pclass+Sex, data=df, rules=F)
+summary(model)
+plot(model)
+
+# CONCLUSSIÓ.
+
+#Amb aquest anàlisi hem pogut comprovar la dita de **"EN CAS DE NAUFRAGI, LES DONES (I ELS NENS) PRIMER**.
+
